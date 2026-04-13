@@ -1,0 +1,3 @@
+allowBuilds:
+  protoc-gen-grpc-web: false
+  protoc-gen-js: false

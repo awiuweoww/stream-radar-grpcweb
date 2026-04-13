@@ -1,0 +1,84 @@
+services:
+  # 1. DATABASE CONFIG (ETCD)
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.11
+    container_name: etcd
+    restart: always
+    environment:
+      - ALLOW_NONE_AUTHENTICATION=yes
+    command: >
+      /usr/local/bin/etcd
+      --name=etcd
+      --data-dir=/etcd-data
+      --listen-client-urls=http://0.0.0.0:2379
+      --advertise-client-urls=http://etcd:2379
+      --listen-peer-urls=http://0.0.0.0:2380
+      --initial-advertise-peer-urls=http://etcd:2380
+      --initial-cluster=etcd=http://etcd:2380
+      --initial-cluster-state=new
+      --log-level=info
+      --logger=zap
+      --enable-v2=true
+    ports:
+      - "2379:2379"
+    volumes:
+      - etcd-data:/etcd-data
+    networks:
+      - radar-net
+
+  # 2. API GATEWAY (APISIX)
+  apisix:
+    image: apache/apisix:3.11.0-debian
+    container_name: apisix
+    restart: always
+    volumes:
+      - ./config.yaml:/usr/local/apisix/conf/config.yaml
+    depends_on:
+      - etcd # Menunggu kontainer created saja, tanpa healthcheck
+    ports:
+      - "9080:9080" # Traffic (Frontend)
+      - "9180:9180" # Admin API (Script)
+    networks:
+      - radar-net
+
+  # 3. DASHBOARD UI
+  dashboard:
+    image: apache/apisix-dashboard:3.0.1-alpine
+    container_name: apisix-dashboard
+    restart: always
+    ports:
+      - "9000:9000" # Akses http://localhost:9000
+    depends_on:
+      - etcd
+    networks:
+      - radar-net
+
+  # 4. BACKEND C++
+  radar-backend:
+    build:
+      context: ./be-stream-radar-grpcweb
+    container_name: radar-backend
+    ports:
+      - "50051:50051"
+    networks:
+      - radar-net
+
+  # 5. FRONTEND REACT
+  radar-frontend:
+    build:
+      context: ./fe-stream-radar-grpcweb
+    container_name: radar-frontend
+    ports:
+      - "3001:3001"
+    environment:
+      - VITE_GRPC_URL=http://localhost:9080
+      - PORT=3001
+    networks:
+      - radar-net
+
+networks:
+  radar-net:
+    driver: bridge
+
+volumes:
+  etcd-data:

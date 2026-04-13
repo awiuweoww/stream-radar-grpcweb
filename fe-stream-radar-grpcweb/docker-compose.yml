@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  web:
+    build: .
+    image: ${SERVICE_NAME:-stream-radar-frontend}:latest
+    container_name: ${SERVICE_NAME:-radar-grpcweb}
+    env_file:
+      - .env
+    ports:
+      - "${TARGET_PORT:-3001}:${SERVICE_PORT:-3001}"
+    volumes:
+      # Sinkronisasi folder lokal ini ke dalam container
+      # Bertujuan agar "Live Reload / Hot Refresh" bekerja!
+      - .:/app
+      - /app/node_modules
+    restart: unless-stopped

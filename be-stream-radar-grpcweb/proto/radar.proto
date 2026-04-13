@@ -1,0 +1,41 @@
+/**
+ * Created Date       : 13-04-2026
+ * Description        : Kontrak Data (Schema) Protobuf untuk Sistem Radar Takktis.
+ *                      Mendefinisikan struktur biner TrackData dan pesan streaming RadarResponse.
+ *
+ * Arsitektur:
+ *   IDL (Interface Definition Language) ──► Code Gen (C++/TS)
+ *
+ * Changelog:
+ *   - 0.1.0 (13-04-2026): Definisi skema radar taktis (Lat, Lon, Speed, Heading, Classification).
+ */
+ 
+syntax = "proto3";
+
+
+package radar;
+
+// Service untuk mengelola streaming radar
+service RadarService {
+  // Client mengirim jumlah objek, Server mengirim aliran (stream) data track
+  rpc StreamRadar(RadarRequest) returns (stream RadarResponse);
+}
+
+message RadarRequest {
+  int32 object_count = 1;
+}
+
+message RadarResponse {
+  repeated TrackData tracks = 1;
+}
+
+message TrackData {
+  int32 track_id = 1;
+  double lat = 2;
+  double lon = 3;
+  float altitude = 4;
+  float speed = 5;
+  float heading = 6;
+  int64 timestamp = 7;
+  int32 classification = 8; 
+}

@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package radar;
+
+// Service untuk mengelola streaming radar
+service RadarService {
+  // Client mengirim jumlah objek, Server mengirim aliran (stream) data track
+  rpc StreamRadar(RadarRequest) returns (stream RadarResponse);
+}
+
+message RadarRequest {
+  int32 object_count = 1;
+}
+
+message RadarResponse {
+  repeated TrackData tracks = 1;
+}
+
+message TrackData {
+  int32 track_id = 1;
+  double lat = 2;
+  double lon = 3;
+  float altitude = 4;
+  float speed = 5;
+  float heading = 6;
+  int64 timestamp = 7;
+  int32 classification = 8; 
+}
