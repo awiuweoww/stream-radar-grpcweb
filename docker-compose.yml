@@ -45,6 +45,8 @@ services:
   dashboard:
     image: apache/apisix-dashboard:3.0.1-alpine
     container_name: apisix-dashboard
+    environment:
+      - ENV_ETCD_ENDPOINTS=http://etcd:2379
     restart: always
     ports:
       - "9000:9000" # Akses http://localhost:9000

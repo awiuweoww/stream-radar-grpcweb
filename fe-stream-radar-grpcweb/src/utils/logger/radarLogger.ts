@@ -32,11 +32,16 @@ class RadarLogger {
     this.stats.packetCount++;
     
     let byteSize = 0;
-    if (data && typeof (data as GRPCPacket).serializeBinary === 'function') {
-        const bytes = (data as GRPCPacket).serializeBinary?.();
-        byteSize = bytes ? bytes.length : 0;
-    } else {
-        byteSize = JSON.stringify(data).length;
+    try {
+        if (data && typeof (data as GRPCPacket).serializeBinary === 'function') {
+            const bytes = (data as GRPCPacket).serializeBinary?.();
+            byteSize = bytes ? bytes.length : 0;
+        } else {
+            byteSize = JSON.stringify(data).length;
+        }
+    } catch (e) {
+        // Fallback jika gagal menghitung ukuran (mencegah logger mati)
+        byteSize = tracks.length * 150; 
     }
     
     this.stats.totalBytes += byteSize;

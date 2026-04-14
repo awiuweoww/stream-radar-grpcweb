@@ -23,6 +23,7 @@ import { RadarTrack } from '../types/radar';
 import { useSimulationStore } from '../store/useSimulationStore';
 import colors from '../utils/colors';
 import { CENTER_COORD } from './useMapInstance';
+import { radarLogger } from '../utils/logger/radarLogger';
 
 import { RadarServiceClient } from '../generated/RadarServiceClientPb';
 import { RadarRequest, TrackData } from '../generated/radar_pb';
@@ -96,6 +97,7 @@ export function useRadarSimulation(
     vectorSourceRef.current.addFeature(centerFeature);
 
     console.log(`📡 [gRPC] Starting stream with ${targetCount} objects...`);
+    radarLogger.logConnection('CONNECTED', GRPC_URL);
     
     const request = new RadarRequest();
     request.setObjectCount(targetCount);
@@ -154,11 +156,12 @@ export function useRadarSimulation(
         }
       });
 
+      radarLogger.logIncomingPackets(response, currentTracks);
       setStats(1000 / dt, tracksList.length);
     });
 
     stream.on('error', (err) => {
-      console.error('❌ [gRPC Stream Error]:', err);
+      radarLogger.logError('gRPC Stream', err);
     });
 
     stream.on('end', () => {
