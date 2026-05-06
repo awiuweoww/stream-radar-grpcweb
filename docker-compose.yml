@@ -59,7 +59,7 @@ services:
   radar-backend:
     build:
       context: ./be-stream-radar-grpcweb
-    container_name: radar-backend
+    container_name: radar-backend-grpc
     ports:
       - "50051:50051"
     networks:
@@ -69,7 +69,7 @@ services:
   radar-frontend:
     build:
       context: ./fe-stream-radar-grpcweb
-    container_name: radar-frontend
+    container_name: radar-frontend-grpcweb
     ports:
       - "3001:3001"
     environment:

@@ -26,7 +26,7 @@ import { CENTER_COORD } from './useMapInstance';
 import { radarLogger } from '../utils/logger/radarLogger';
 
 import { RadarServiceClient } from '../generated/RadarServiceClientPb';
-import { RadarRequest, TrackData } from '../generated/radar_pb';
+import { RadarRequest } from '../generated/radar_pb';
 
 const GRPC_URL = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_GRPC_URL || 'http://localhost:9080';
 const client = new RadarServiceClient(GRPC_URL);
@@ -52,6 +52,10 @@ export function useRadarSimulation(
   const vectorSourceRef = useRef<VectorSource>(new VectorSource());
   const featuresMapRef = useRef<Map<string, Feature<Point>>>(new Map<string, Feature<Point>>());
   const lastPacketTime = useRef<number>(Date.now());
+  const burstCountRef = useRef<number>(0);
+  const latestTracksMapRef = useRef<Map<string, RadarTrack>>(new Map());
+  const animationFrameRef = useRef<number>(0);
+  const lastCleanupTimeRef = useRef<number>(Date.now());
 
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -88,15 +92,77 @@ export function useRadarSimulation(
     if (!isActive) {
       vectorSourceRef.current.clear();
       featuresMapRef.current.clear();
+      burstCountRef.current = 0;
+      latestTracksMapRef.current.clear();
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       setStats(0, 0);
       return;
     }
+
+    /**
+     * Loop render utama yang berjalan di setiap frame animasi.
+     * Mengelola pembaruan posisi fitur di peta dan pembersihan data usang.
+     */
+    const renderLoop = () => {
+      const now = Date.now();
+      const tracksMap = latestTracksMapRef.current;
+      
+      if (tracksMap.size > 0) {
+        tracksMap.forEach((trackDataObj) => {
+          const id = trackDataObj.trackId;
+          const { lon, lat } = trackDataObj;
+
+          let feature = featuresMapRef.current.get(id);
+          const coords = fromLonLat([lon, lat]);
+
+          if (!feature) {
+            feature = new Feature({ geometry: new Point(coords) });
+            vectorSourceRef.current.addFeature(feature);
+            featuresMapRef.current.set(id, feature);
+          } else {
+            const geom = feature.getGeometry();
+            if (geom) geom.setCoordinates(coords);
+          }
+
+          // Tambahkan metadata untuk pembersihan data lama (TTL)
+          feature.set('lastUpdate', now);
+          feature.set('classification', trackDataObj.classification === 'FRIEND' ? '1' : '0');
+          feature.set('trackData', trackDataObj);
+
+          if (selectedTrackId.current === id) {
+            setPopupData(trackDataObj);
+            if (popupInstanceRef.current) {
+              popupInstanceRef.current.setPosition(coords);
+            }
+          }
+        });
+        
+        tracksMap.clear();
+      }
+
+      // Pembersihan data (Stale Data Cleanup) setiap 5 detik
+      if (now - lastCleanupTimeRef.current > 5000) {
+        const STALE_THRESHOLD = 10000; 
+        featuresMapRef.current.forEach((feature, id) => {
+          const lastUpdate = feature.get('lastUpdate') as number;
+          if (id !== '0' && feature.get('classification') !== 'CENTER' && (!lastUpdate || now - lastUpdate > STALE_THRESHOLD)) {
+            vectorSourceRef.current.removeFeature(feature);
+            featuresMapRef.current.delete(id);
+          }
+        });
+        lastCleanupTimeRef.current = now;
+      }
+
+      animationFrameRef.current = requestAnimationFrame(renderLoop);
+    };
+
+    animationFrameRef.current = requestAnimationFrame(renderLoop);
 
     const centerFeature = new Feature({ geometry: new Point(CENTER_COORD) });
     centerFeature.set('classification', 'CENTER');
     vectorSourceRef.current.addFeature(centerFeature);
 
-    console.log(`📡 [gRPC] Starting stream with ${targetCount} objects...`);
+    console.log(` [gRPC] Starting stream with ${targetCount} objects...`);
     radarLogger.logConnection('CONNECTED', GRPC_URL);
     
     const request = new RadarRequest();
@@ -106,58 +172,39 @@ export function useRadarSimulation(
 
     stream.on('data', (response) => {
       const now = Date.now();
-      const dt = Math.max(now - lastPacketTime.current, 1); // Avoid division by zero
-      lastPacketTime.current = now;
-      
       const tracksList = response.getTracksList();
       const currentTracks: RadarTrack[] = [];
 
-      tracksList.forEach((t: TrackData) => {
+      for (let i = 0; i < tracksList.length; i++) {
+        const t = tracksList[i];
         const id = t.getTrackId().toString();
-        const lat = t.getLat();
-        const lon = t.getLon();
-        const classification = t.getClassification().toString();
-        const speed = t.getSpeed();
-        const heading = t.getHeading();
-        const altitude = t.getAltitude();
-        const timestamp = t.getTimestamp();
+
+        if (id === '0') {
+           const dt = Math.max(now - lastPacketTime.current, 1);
+           setStats(1000 / dt, featuresMapRef.current.size);
+           radarLogger.logDataDrop(burstCountRef.current, targetCount);
+           
+           burstCountRef.current = 0;
+           lastPacketTime.current = now;
+        }
+        
+        burstCountRef.current += 1;
 
         const trackDataObj: RadarTrack = {
           trackId: id,
-          lat,
-          lon,
-          speed,
-          heading,
-          altitude,
-          timestamp,
-          classification: classification === '1' ? 'FRIEND' : 'HOSTILE'
+          lat: t.getLat(),
+          lon: t.getLon(),
+          speed: t.getSpeed(),
+          heading: t.getHeading(),
+          altitude: t.getAltitude(),
+          timestamp: t.getTimestamp(),
+          classification: t.getClassification().toString() === '1' ? 'FRIEND' : 'HOSTILE'
         };
 
+        latestTracksMapRef.current.set(id, trackDataObj);
         currentTracks.push(trackDataObj);
-
-        let feature = featuresMapRef.current.get(id);
-        if (!feature) {
-          feature = new Feature({ geometry: new Point(fromLonLat([lon, lat])) });
-          vectorSourceRef.current.addFeature(feature);
-          featuresMapRef.current.set(id, feature);
-        } else {
-          const geom = feature.getGeometry();
-          if (geom) geom.setCoordinates(fromLonLat([lon, lat]));
-        }
-
-        feature.set('classification', classification);
-        feature.set('trackData', trackDataObj);
-
-        if (selectedTrackId.current === id) {
-           setPopupData(trackDataObj);
-           if (popupInstanceRef.current) {
-             popupInstanceRef.current.setPosition(fromLonLat([lon, lat]));
-           }
-        }
-      });
-
+      }
       radarLogger.logIncomingPackets(response, currentTracks);
-      setStats(1000 / dt, tracksList.length);
     });
 
     stream.on('error', (err) => {
@@ -165,7 +212,7 @@ export function useRadarSimulation(
     });
 
     stream.on('end', () => {
-      console.log('🔌 [gRPC Stream] Ended');
+      console.log(' [gRPC Stream] Ended');
     });
 
     return () => {

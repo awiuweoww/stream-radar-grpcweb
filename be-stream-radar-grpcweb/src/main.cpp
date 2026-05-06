@@ -32,65 +32,91 @@ using grpc::Status;
 using namespace radar;
 
 class RadarServiceImpl final : public RadarService::Service {
-    // logika untuk menghasilkan angka acak
+    struct TrackParams {
+        double startLat;
+        double startLon;
+        float speed;
+        double sinHeading; 
+        double cosHeading; 
+        uint8_t classification;
+        float altitude;
+        float heading;
+    };
+
+    std::vector<TrackParams> params;
+
     double get_random(int index, double seed) {
         return fmod(std::abs(sin(index * 12.9898 + seed * 78.233)) * 43758.5453, 1.0);
     }
 
 public:
-    // logika untuk streaming data radar
+    RadarServiceImpl() {
+        const int MAX_TRACKS = 10000;
+        params.resize(MAX_TRACKS);
+        for (int i = 0; i < MAX_TRACKS; i++) {
+            double headingRad = get_random(i, 3.3) * 6.28318;
+            double knots = 100.0 + (get_random(i, 5.5) * 400.0);
+            double velocityFactor = knots * 0.0000035;
+
+            params[i].startLat = -5.5 + (get_random(i, 1.1) - 0.5) * 1.5;
+            params[i].startLon = 110.5 + (get_random(i, 2.2) - 0.5) * 1.5;
+            params[i].speed = (float)knots;
+            params[i].sinHeading = sin(headingRad) * velocityFactor;
+            params[i].cosHeading = cos(headingRad) * velocityFactor;
+            params[i].classification = (uint8_t)(get_random(i, 6.6) > 0.6 ? 1 : 0);
+            params[i].altitude = (float)(get_random(i, 7.7) * 2000.0);
+            params[i].heading = (float)(fmod(headingRad * 57.29, 360.0));
+        }
+        std::cout << "[Radar Engine] Pre-calculation for " << MAX_TRACKS << " tracks complete." << std::endl;
+    }
+
     Status StreamRadar(ServerContext* context, const RadarRequest* request, ServerWriter<RadarResponse>* writer) override {
         int targetCount = request->object_count() > 0 ? request->object_count() : 30;
+        if (targetCount > params.size()) targetCount = params.size();
+
         auto startTime = std::chrono::steady_clock::now();
 
         std::cout << "[Radar Engine] Streaming " << targetCount << " targets (Warfare Speed Active)" << std::endl;
 
         while (!context->IsCancelled()) {
-            RadarResponse response;
-            auto nowWall = std::chrono::system_clock::now();
-            long long timestampMs = std::chrono::duration_cast<std::chrono::milliseconds>(nowWall.time_since_epoch()).count();
-            
             auto nowSteady = std::chrono::steady_clock::now();
             double timeSec = std::chrono::duration_cast<std::chrono::milliseconds>(nowSteady - startTime).count() * 0.001;
 
+            bool write_success = true;
             for (int i = 0; i < targetCount; i++) {
-                // SEBARAN LUAS: Muncul acak di radius luas sekitar koordinat -5.5, 110.5
-                double startLat = -5.5 + (get_random(i, 1.1) - 0.5) * 1.5;
-                double startLon = 110.5 + (get_random(i, 2.2) - 0.5) * 1.5;
+                RadarResponse response; 
+                long long timestampMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+
+                const auto& p = params[i];
+                TrackData* t = response.add_tracks(); 
                 
-                // ARAH DAN KECEPATAN (100 - 500 KNOTS)
-                double knots = 100.0 + (get_random(i, 5.5) * 400.0);
-                double headingRad = get_random(i, 3.3) * 6.28318; // Arah acak 0-360 derajat
-                
-                // Konversi Knots ke pergerakan visual 
-                double velocityFactor = knots * 0.0000035; 
-                
-                TrackData* t = response.add_tracks();
                 t->set_track_id(i);
-                
-                // Kalkulasi posisi real-time berdasarkan waktu berjalan
-                t->set_lat(startLat + (sin(headingRad) * timeSec * velocityFactor));
-                t->set_lon(startLon + (cos(headingRad) * timeSec * velocityFactor));
-                
-                t->set_altitude((float)(get_random(i, 7.7) * 2000.0)); // 0 - 2000m
-                t->set_speed((float)knots);
-                t->set_heading((float)(fmod(headingRad * 57.29, 360.0)));
+                t->set_lat(p.startLat + (p.sinHeading * timeSec));
+                t->set_lon(p.startLon + (p.cosHeading * timeSec));
+                t->set_speed(p.speed);
+                t->set_altitude(p.altitude);
+                t->set_heading(p.heading);
                 t->set_timestamp(timestampMs);
-                t->set_classification((int32_t)(get_random(i, 6.6) > 0.6 ? 1 : 0));
+                t->set_classification(p.classification);
+
+                if (!writer->Write(response)) {
+                    write_success = false;
+                    break;
+                }
             }
 
-            if (!writer->Write(response)) break;
+            if (!write_success) break;
             
-            // Interval pengiriman 200ms (5 FPS) agar pergerakan mulus tapi hemat bandwidth
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         }
 
-        std::cout << "🔌 [Radar Engine] Client disconnected." << std::endl;
+        std::cout << " [Radar Engine] Client disconnected." << std::endl;
         return Status::OK;
     }
 };
 
-// Fungsi untuk menjalankan server
+
 void RunServer() {
     std::string server_address("0.0.0.0:50051");
     RadarServiceImpl service;

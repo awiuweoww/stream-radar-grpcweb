@@ -1,119 +1,174 @@
 /**
- * Created Date       : 11-04-2026
- * Description        : Utilitas Logging & Monitoring Performa Radar.
- *                      Digunakan untuk memantau metrik gRPC, throughput, dan latency streaming.
+ * @file radarLogger.ts
+ * @description Auditor performa radar dengan akurasi tinggi.
+ * Menghitung latensi end-to-end (Backend-to-Frontend) secara real-time.
  */
 
 import { RadarTrack } from '../../types/radar';
 
-/**
- * Interface dasar untuk objek pesan gRPC yang mendukung serialisasi biner.
- */
-interface GRPCPacket {
-  serializeBinary?(): Uint8Array;
-}
-
 class RadarLogger {
+  private baseOffset: number | null = null;
+  private audit = {
+    t1_sent: 0,
+    t100_received: 0,
+    t1_received: 0
+  };
+
   private stats = {
-    packetCount: 0,
+    count: 0,
     totalBytes: 0,
-    lastLogTime: performance.now(),
+    totalLat: 0,
+    startTime: performance.now(),
+  };
+
+  private integrity = {
+    targetReached: false,
+    maxObserved: 0,
+    lastDropLog: 0,
+    lastTargetCount: 0
   };
 
   /**
-   * Mencatat data paket yang masuk dan menghitung statistik performa.
-   * 
-   * @param data - Data mentah yang diterima (Protobuf atau JSON)
-   * @param tracks - Data yang sudah diparsing menjadi array RadarTrack
-   * @returns Rata-rata latency dari paket tersebut (ms)
+   * Mencatat paket masuk dengan perhitungan latensi yang disinkronisasi. 
+   * @param data - Data payload mentah
+   * @param tracks - Daftar objek RadarTrack
+   * @param rawLength - Ukuran data dalam byte (opsional)
    */
-  public logIncomingPackets(data: unknown, tracks: RadarTrack[]): number {
+  public logIncomingPackets(data: unknown, tracks: RadarTrack[], rawLength?: number): void {
     const arrivalTime = Date.now();
-    this.stats.packetCount++;
-    
-    let byteSize = 0;
-    try {
-        if (data && typeof (data as GRPCPacket).serializeBinary === 'function') {
-            const bytes = (data as GRPCPacket).serializeBinary?.();
-            byteSize = bytes ? bytes.length : 0;
-        } else {
-            byteSize = JSON.stringify(data).length;
-        }
-    } catch (e) {
-        // Fallback jika gagal menghitung ukuran (mencegah logger mati)
-        byteSize = tracks.length * 150; 
-    }
-    
+    this.stats.count += tracks.length;
+
+    const byteSize = rawLength ?? (tracks.length * 150);
     this.stats.totalBytes += byteSize;
 
-    let avgLatency = 0;
-    if (tracks.length > 0 && tracks[0].timestamp) {
-      avgLatency = arrivalTime - tracks[0].timestamp;
-    }
+    tracks.forEach(track => {
+      const rawLat = arrivalTime - track.timestamp;
+      if (this.baseOffset === null || rawLat < this.baseOffset) {
+        this.baseOffset = rawLat;
+      }
 
-    if (this.stats.packetCount % 10 === 0) { 
-        console.debug(`[Radar gRPC] Stream Incoming: ${tracks.length} objects`);
-    }
+      const cleanLat = Math.max(0, rawLat - this.baseOffset);
+      this.stats.totalLat += cleanLat;
 
+      if (String(track.trackId) === '1') {
+        this.audit.t1_sent = track.timestamp;
+        this.audit.t1_received = arrivalTime;
+      }
+      if (String(track.trackId) === '100') {
+        this.audit.t100_received = arrivalTime;
+      }
+    });
     const now = performance.now();
-    if (now - this.stats.lastLogTime > 5000) {
-      this.printPerformanceSummary(avgLatency, now, tracks.length);
+    if (now - this.stats.startTime > 5000) {
+      this.printSummary();
       this.resetStats(now);
     }
-    
-    return avgLatency;
-  }
-
-  /**
-   * Mencatat eror yang terjadi pada sistem radar ke konsol.
-   * 
-   * @param context - Lokasi atau konteks terjadinya eror.
-   * @param error - Objek eror yang ditangkap.
-   */
-  public logError(context: string, error: unknown): void {
-    console.error(`%c[Radar Error] @ ${context}:`, 'color: #ef4444; font-weight: bold', error);
-  }
-
-  /**
-   * Mencatat status koneksi gRPC ke konsol.
-   * 
-   * @param status - Status koneksi (CONNECTED/DISCONNECTED/RECONNECTING).
-   * @param url - URL endpoint gRPC.
-   */
-  public logConnection(status: 'CONNECTED' | 'DISCONNECTED' | 'RECONNECTING', url: string): void {
-    const color = status === 'CONNECTED' ? '#22c55e' : '#eab308';
-    console.log(`%c[Radar gRPC Connection] ${status}: ${url}`, `color: ${color}; font-weight: bold`);
   }
 
   /**
    * Mencetak ringkasan performa streaming ke konsol.
-   * 
-   * @param avgLatency - Rata-rata latency (ms).
-   * @param now - Timestamp saat ini (ms).
-   * @param lastTrackCount - Jumlah objek terakhir yang diterima.
    */
-  private printPerformanceSummary(avgLatency: number, now: number, lastTrackCount: number): void {
-    const durationSec = (now - this.stats.lastLogTime) / 1000;
-    const throughputKB = (this.stats.totalBytes / 1024) / durationSec;
-    
-    console.groupCollapsed(`%c📊 gRPC Performance Report (${new Date().toLocaleTimeString()})`, 'color: #f97316; font-weight: bold');
-    console.log(`Packets Received : ${this.stats.packetCount}`);
-    console.log(`Avg Latency     : ${avgLatency.toFixed(2)}ms`);
-    console.log(`Throughput      : ${throughputKB.toFixed(2)} KB/s`);
-    console.log(`Data Density    : ${(this.stats.totalBytes / 1024).toFixed(2)} KB total`);
-    console.log(`Total Objects   : ${lastTrackCount}`);
+  private printSummary(): void {
+    const duration = (performance.now() - this.stats.startTime) / 1000;
+    const throughput = (this.stats.totalBytes / 1024) / duration;
+    const avgLatency = this.stats.count > 0 ? (this.stats.totalLat / this.stats.count) : 0;
+
+    const burstDuration = this.audit.t100_received > 0 && this.audit.t1_sent > 0
+      ? Math.max(100, this.audit.t100_received - this.audit.t1_sent - (this.baseOffset || 0))
+      : 0;
+
+    console.groupCollapsed(`%c  Radar Performance Report (${new Date().toLocaleTimeString()})`, 'color: #3b82f6; font-weight: bold');
+    console.log(`Packets Processed : ${this.stats.count}`);
+    console.log(`Avg Latency      : %c${avgLatency.toFixed(2)}ms`, 'color: #22c55e; font-weight: bold');
+    console.log(`Throughput       : ${throughput.toFixed(2)} KB/s`);
+    console.log(`-------------------------------------------`);
+    console.log(`Waktu Kirim ID 1   : ${this.formatTime(this.audit.t1_sent)}`);
+    console.log(`Waktu Terima ID 100: ${this.formatTime(this.audit.t100_received)}`);
+    console.log(`%cDurasi Streaming 1 s/d 100: ${burstDuration.toFixed(2)}ms`, 'color: #f59e0b; font-weight: bold');
     console.groupEnd();
   }
 
   /**
-   * Mereset data statistik untuk siklus perhitungan berikutnya.
-   * 
-   * @param now - Timestamp saat ini (ms).
+   * Memformat timestamp menjadi string waktu yang dapat dibaca.
+   * @param ts - Timestamp (ms)
+   * @returns String format waktu (HH:MM:SS)
+   */
+  private formatTime(ts: number): string {
+    if (!ts) return "N/A";
+    const d = new Date(ts);
+    return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  }
+
+  /**
+   * Mereset statistik perhitungan performa.
+   * @param now - Waktu saat ini dari performance.now()
    */
   private resetStats(now: number): void {
-    this.stats.packetCount = 0;
+    this.stats.count = 0;
     this.stats.totalBytes = 0;
-    this.stats.lastLogTime = now;
+    this.stats.totalLat = 0;
+    this.stats.startTime = now;
+    this.baseOffset = null;
+
+    /** Reset audit */
+    this.audit.t1_sent = 0;
+    this.audit.t100_received = 0;
+    this.audit.t1_received = 0;
+  }
+
+  /**
+   * Mencatat bukti jika data hilang setelah mencapai target.
+   * @param currentCount - Jumlah objek saat ini
+   * @param targetCount - Target jumlah objek maksimal
+   */
+  public logDataDrop(currentCount: number, targetCount: number): void {
+    if (targetCount <= 0) return;
+    if (this.integrity.lastTargetCount !== targetCount) {
+      this.integrity.targetReached = false;
+      this.integrity.maxObserved = 0;
+      this.integrity.lastTargetCount = targetCount;
+    }
+
+    if (!this.integrity.targetReached) {
+      if (currentCount >= targetCount) {
+        this.integrity.targetReached = true;
+        this.integrity.maxObserved = currentCount;
+        console.log(`%c Target ${targetCount} tercapai. Monitoring drop diaktifkan.`, 'color: #22c55e; font-weight: bold');
+      }
+      return;
+    }
+
+    if (currentCount < targetCount) {
+      const now = Date.now();
+      if (now - this.integrity.lastDropLog > 1000) {
+        console.warn(
+          `%c  DATA DROP DETECTED! %c Bukti: Data turun menjadi ${currentCount}/${targetCount} (Missing: ${targetCount - currentCount})`,
+          'color: #ffffff; background: #ef4444; padding: 2px 5px; border-radius: 3px;',
+          'color: #ef4444; font-weight: bold'
+        );
+        this.integrity.lastDropLog = now;
+      }
+    } else {
+      this.integrity.maxObserved = Math.max(this.integrity.maxObserved, currentCount);
+    }
+  }
+
+  /**
+   * Mencatat log error ke konsol.
+   * @param ctx - Konteks terjadinya error
+   * @param err - Objek error
+   */
+  public logError(ctx: string, err: unknown) {
+    console.error(`[Error] ${ctx}:`, err);
+  }
+
+  /**
+   * Mencatat status koneksi jaringan ke konsol.
+   * @param status - Status koneksi
+   * @param url - URL endpoint koneksi
+   */
+  public logConnection(status: string, url: string) {
+    console.log(`[Connection] ${status}: ${url}`);
   }
 }
 
